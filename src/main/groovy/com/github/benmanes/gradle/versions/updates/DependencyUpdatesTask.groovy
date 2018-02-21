@@ -19,6 +19,7 @@ import groovy.transform.TypeChecked
 import org.gradle.api.DefaultTask
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.TaskAction
+import org.gradle.api.tasks.Optional
 
 /**
  * A task that reports which dependencies have later versions.
@@ -32,29 +33,40 @@ class DependencyUpdatesTask extends DefaultTask {
   String revision = 'milestone'
 
   @Input
-  Object outputFormatter = 'plain'
+  String outputDir =
+    "${project.buildDir.path.replace(project.projectDir.path + '/', '')}/dependencyUpdates"
 
-  @Input
-  String outputDir = 'build/dependencyUpdates'
+  @Input @Optional
+  String getOutputFormatterName() {
+    return (outputFormatter instanceof String) ? ((String) outputFormatter) : null
+  }
+
+  Object outputFormatter = 'plain';
+  Closure resolutionStrategy = null;
 
   DependencyUpdatesTask() {
     description = 'Displays the dependency updates for the project.'
     group = 'Help'
+
+    outputs.upToDateWhen { false }
   }
 
   @TaskAction
   def dependencyUpdates() {
-    def evaluator = new DependencyUpdates(project, revisionLevel(), outputFormatterProp(), outputDirectory())
+    project.evaluationDependsOnChildren()
+
+    def evaluator = new DependencyUpdates(project, resolutionStrategy,
+      revisionLevel(), outputFormatterProp(), outputDirectory())
     DependencyUpdatesReporter reporter = evaluator.run()
     reporter?.write()
   }
 
   /** Returns the resolution revision level. */
-  String revisionLevel() { System.properties.get('revision', revision) }
+  String revisionLevel() { System.properties['revision'] ?: revision }
 
   /** Returns the outputDir format. */
-  Object outputFormatterProp() { System.properties.get('outputFormatter', outputFormatter) }
+  Object outputFormatterProp() { System.properties['outputFormatter'] ?: outputFormatter }
 
   /** Returns the outputDir destination. */
-  String outputDirectory() { System.properties.get('outputDir', outputDir) }
+  String outputDirectory() { System.properties['outputDir'] ?: outputDir }
 }

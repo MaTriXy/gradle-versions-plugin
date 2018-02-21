@@ -30,7 +30,6 @@ import org.gradle.api.artifacts.repositories.ArtifactRepository
 import org.gradle.api.artifacts.repositories.FlatDirectoryArtifactRepository
 import org.gradle.api.artifacts.repositories.IvyArtifactRepository
 import org.gradle.api.artifacts.repositories.MavenArtifactRepository
-import org.gradle.api.initialization.dsl.ScriptHandler
 
 import static groovy.transform.TypeCheckingMode.SKIP
 import static org.gradle.api.specs.Specs.SATISFIES_ALL
@@ -42,31 +41,16 @@ import static org.gradle.api.specs.Specs.SATISFIES_ALL
  */
 @TypeChecked
 class Resolver {
-  final Map<ScriptHandler, List<ArtifactRepository>> repositoriesForBuildscript;
-  final Map<Project, List<ArtifactRepository>> repositoriesForProject;
-  final Set<ArtifactRepository> allRepositories;
-  final boolean useSelectionRules
   final Project project
+  final Closure resolutionStrategy
+  final boolean useSelectionRules
 
-  Resolver(Project project) {
+  Resolver(Project project, Closure resolutionStrategy) {
     this.project = project
+    this.resolutionStrategy = resolutionStrategy
 
     useSelectionRules = new VersionComparator(project)
       .compare(project.gradle.gradleVersion, '2.2') >= 0
-
-    Set<ArtifactRepository> all = []
-    repositoriesForBuildscript = project.allprojects.collectEntries { proj ->
-      all.addAll(proj.buildscript.repositories)
-      [proj, new HashSet(proj.buildscript.repositories)]
-    }
-    repositoriesForProject = project.allprojects.collectEntries { proj ->
-      all.addAll(proj.repositories)
-      [proj, new HashSet(proj.repositories)]
-    }
-
-    // Only RepositoryHandler knows how to determine equivalence
-    project.repositories.clear()
-    allRepositories = all.findAll { project.repositories.add(it) } as Set
 
     logRepositories()
   }
@@ -76,18 +60,16 @@ class Resolver {
     Map<Coordinate.Key, Coordinate> coordinates = getCurrentCoordinates(configuration)
     Configuration latestConfiguration = createLatestConfiguration(configuration, revision)
 
-    resolveWithAllRepositories {
-      LenientConfiguration lenient = latestConfiguration.resolvedConfiguration.lenientConfiguration
-      Set<ResolvedDependency> resolved = lenient.getFirstLevelModuleDependencies(SATISFIES_ALL)
-      Set<UnresolvedDependency> unresolved = lenient.getUnresolvedModuleDependencies()
-      return getStatus(coordinates, resolved, unresolved)
-    }
+    LenientConfiguration lenient = latestConfiguration.resolvedConfiguration.lenientConfiguration
+    Set<ResolvedDependency> resolved = lenient.getFirstLevelModuleDependencies(SATISFIES_ALL)
+    Set<UnresolvedDependency> unresolved = lenient.getUnresolvedModuleDependencies()
+    return getStatus(coordinates, resolved, unresolved)
   }
 
   /** Returns the version status of the configuration's dependencies. */
   private Set<DependencyStatus> getStatus(Map<Coordinate.Key, Coordinate> coordinates,
       Set<ResolvedDependency> resolved,Set<UnresolvedDependency> unresolved) {
-    Set<DependencyStatus> result = []
+    Set<DependencyStatus> result = new HashSet<>()
     for (ResolvedDependency dependency : resolved) {
       Coordinate resolvedCoordinate = Coordinate.from(dependency.module.id)
       Coordinate originalCoordinate = coordinates.get(resolvedCoordinate.key)
@@ -116,11 +98,17 @@ class Resolver {
     }
 
     Configuration copy = configuration.copyRecursive().setTransitive(false)
+    // https://github.com/ben-manes/gradle-versions-plugin/issues/127
+    if (copy.metaClass.respondsTo(copy, "setCanBeResolved", Boolean)) {
+      copy.setCanBeResolved(true)
+    }
+
     copy.dependencies.clear()
     copy.dependencies.addAll(latest)
 
     if (useSelectionRules) {
       addRevisionFilter(copy, revision)
+      addCustomResolutionStrategy(copy)
     }
     return copy
   }
@@ -129,13 +117,21 @@ class Resolver {
   @TypeChecked(SKIP)
   private Dependency createQueryDependency(Dependency dependency, String revision) {
     String versionQuery = useSelectionRules ? '+' : "latest.${revision}"
-    String version = (dependency.version == null) ? 'none' : versionQuery
+
+    // If no version was specified then it may be intended to be resolved by another plugin
+    // (e.g. the dependency-management-plugin for BOMs) or is an explicit file (e.g. libs/*.jar).
+    // In the case of another plugin we use '+' in the hope that the plugin will not restrict the
+    // query (see issue #97). Otherwise if its a file then use 'none' to pass it through.
+    String version = (dependency.version == null)
+        ? (dependency.artifacts.empty ? '+' : 'none')
+        : versionQuery
+
     return project.dependencies.create("${dependency.group}:${dependency.name}:${version}") {
       transitive = false
     }
   }
 
-  /** Add a revision filter by rejecting candidates using a component selection rule. */
+  /** Adds a revision filter by rejecting candidates using a component selection rule. */
   @TypeChecked(SKIP)
   private void addRevisionFilter(Configuration configuration, String revision) {
     configuration.resolutionStrategy { ResolutionStrategy componentSelection ->
@@ -153,6 +149,13 @@ class Resolver {
     }
   }
 
+  /** Adds a custom resolution strategy only applicable for the dependency updates task. */
+  private void addCustomResolutionStrategy(Configuration configuration) {
+    if (resolutionStrategy != null) {
+      configuration.resolutionStrategy(resolutionStrategy)
+    }
+  }
+
   /** Returns the coordinates for the current (declared) dependency versions. */
   private Map<Coordinate.Key, Coordinate> getCurrentCoordinates(Configuration configuration) {
     Map<Coordinate.Key, Coordinate> declared = configuration.dependencies.findAll { dependency ->
@@ -165,68 +168,56 @@ class Resolver {
       return Collections.emptyMap()
     }
 
-    return resolveWithAllRepositories {
-      Map<Coordinate.Key, Coordinate> coordinates = [:]
-      Configuration copy = configuration.copyRecursive().setTransitive(false)
-      LenientConfiguration lenient = copy.resolvedConfiguration.lenientConfiguration
-
-      Set<ResolvedDependency> resolved = lenient.getFirstLevelModuleDependencies(SATISFIES_ALL)
-      for (ResolvedDependency dependency : resolved) {
-        Coordinate coordinate = Coordinate.from(dependency.module.id)
-        coordinates.put(coordinate.key, coordinate)
-      }
-
-      Set<UnresolvedDependency> unresolved = lenient.getUnresolvedModuleDependencies()
-      for (UnresolvedDependency dependency : unresolved) {
-        Coordinate coordinate = Coordinate.from(dependency.selector)
-        coordinates.put(coordinate.key, declared.get(coordinate.key))
-      }
-
-      // Ignore undeclared (hidden) dependencies that appear when resolving a configuration
-      coordinates.keySet().retainAll(declared.keySet())
-
-      return coordinates
+    Map<Coordinate.Key, Coordinate> coordinates = [:]
+    Configuration copy = configuration.copyRecursive().setTransitive(false)
+    // https://github.com/ben-manes/gradle-versions-plugin/issues/127
+    if (copy.metaClass.respondsTo(copy, "setCanBeResolved", Boolean)) {
+      copy.setCanBeResolved(true)
     }
+    LenientConfiguration lenient = copy.resolvedConfiguration.lenientConfiguration
+
+    Set<ResolvedDependency> resolved = lenient.getFirstLevelModuleDependencies(SATISFIES_ALL)
+    for (ResolvedDependency dependency : resolved) {
+      Coordinate coordinate = Coordinate.from(dependency.module.id)
+      coordinates.put(coordinate.key, coordinate)
+    }
+
+    Set<UnresolvedDependency> unresolved = lenient.getUnresolvedModuleDependencies()
+    for (UnresolvedDependency dependency : unresolved) {
+      Coordinate coordinate = Coordinate.from(dependency.selector)
+      coordinates.put(coordinate.key, declared.get(coordinate.key))
+    }
+
+    // Ignore undeclared (hidden) dependencies that appear when resolving a configuration
+    coordinates.keySet().retainAll(declared.keySet())
+
+    return coordinates
   }
 
-  /**
-   * Performs the closure with the project temporarily using all of the repositories collected
-   * across all projects. The additional repositories added are removed after the operation
-   * completes.
-   */
-  private <T> T resolveWithAllRepositories(Closure<T> closure) {
-    project.allprojects.each { proj ->
-      proj.buildscript.repositories.clear()
-      proj.buildscript.repositories.addAll(allRepositories)
-
-      proj.repositories.clear()
-      proj.repositories.addAll(allRepositories)
+  private void logRepositories() {
+    boolean root = (project.rootProject == project)
+    String label = "${root ? project.name : project.path} project${root ? ' (root)' : ''}"
+    if (!project.buildscript.configurations*.dependencies.isEmpty()) {
+      project.logger.info("Resolving ${label} buildscript with repositories:")
+      for (ArtifactRepository repository : project.buildscript.repositories) {
+        logRepository(repository)
+      }
     }
-    try {
-      closure.call()
-    } finally {
-      repositoriesForProject.each { proj, original ->
-        proj.repositories.clear()
-        proj.repositories.addAll(original)
-      }
-      repositoriesForBuildscript.each { buildscript, original ->
-        buildscript.repositories.clear()
-        buildscript.repositories.addAll(original)
-      }
+    project.logger.info("Resolving ${label} configurations with repositories:")
+    for (ArtifactRepository repository : project.repositories) {
+      logRepository(repository)
     }
   }
 
   @TypeChecked(SKIP)
-  private void logRepositories() {
-    project.logger.info('Resolving with repositories:')
-    allRepositories.each {
-      if (it instanceof FlatDirectoryArtifactRepository) {
-        project.logger.info(" - $it.name: ${it.dirs}")
-      } else if (it instanceof MavenArtifactRepository || it instanceof IvyArtifactRepository) {
-        project.logger.info(" - $it.name: $it.url");
-      } else {
-        project.logger.info(" - $it.name: ${it.getClass().simpleName}")
-      }
+  private void logRepository(ArtifactRepository repository) {
+    if (repository instanceof FlatDirectoryArtifactRepository) {
+      project.logger.info(" - ${repository.name}: ${repository.dirs}")
+    } else if (repository instanceof MavenArtifactRepository ||
+        repository instanceof IvyArtifactRepository) {
+      project.logger.info(" - ${repository.name}: ${repository.url}");
+    } else {
+      project.logger.info(" - ${repository.name}: ${repository.getClass().simpleName}")
     }
   }
 }

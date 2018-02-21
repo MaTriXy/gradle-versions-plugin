@@ -16,13 +16,10 @@
 package com.github.benmanes.gradle.versions.updates
 
 import groovy.transform.EqualsAndHashCode
-import groovy.transform.ToString
-import groovy.transform.TupleConstructor
 import groovy.transform.TypeChecked
 import org.gradle.api.artifacts.Dependency
 import org.gradle.api.artifacts.ModuleVersionIdentifier
 import org.gradle.api.artifacts.ModuleVersionSelector
-import org.gradle.api.artifacts.ResolvedDependency
 
 /**
  * The dependency's coordinate.
@@ -52,7 +49,7 @@ class Coordinate implements Comparable<Coordinate> {
   }
 
   @Override
-  int compareTo(Coordinate coordinate) {
+  public int compareTo(Coordinate coordinate) {
     int result = key.compareTo(coordinate.key)
     return (result == 0) ? version.compareTo(coordinate.version) : result
   }
@@ -85,7 +82,7 @@ class Coordinate implements Comparable<Coordinate> {
     }
 
     @Override
-    int compareTo(Key key) {
+    public int compareTo(Key key) {
       int result = groupId.compareTo(key.groupId)
       return (result == 0) ? artifactId.compareTo(key.artifactId) : result
     }

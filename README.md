@@ -1,16 +1,23 @@
 # Gradle Versions Plugin
 
-In the spirit of the [Maven Versions Plugin](http://mojo.codehaus.org/versions-maven-plugin/),
+In the spirit of the [Maven Versions Plugin](http://www.mojohaus.org/versions-maven-plugin/),
 this plugin provides a task to determine which dependencies have updates.
-
-**The latest release (0.11.x) is a major refactoring. Please try it out, let us know of any bugs,
-and downgrade to 0.10.1 if any block you. Thanks!**
 
 ## Usage
 
 This plugin is available from [Bintray's JCenter repository](http://jcenter.bintray.com). You can
-add it to your build script using the following configuration:
+add it to your top-level build script using the following configuration:
 
+### `plugins` block:
+
+```groovy
+plugins {
+  id 'com.github.ben-manes.versions' version '0.17.0'
+}
+```
+or via the
+
+### `buildscript` block:
 ```groovy
 apply plugin: 'com.github.ben-manes.versions'
 
@@ -20,12 +27,12 @@ buildscript {
   }
 
   dependencies {
-    classpath 'com.github.ben-manes:gradle-versions-plugin:0.11.3'
-    // classpath 'org.codehaus.groovy:groovy-backports-compat23:2.3.5' // uncomment if you're using Gradle 1.x
+    classpath 'com.github.ben-manes:gradle-versions-plugin:0.17.0'
   }
 }
 ```
-The current version is known to work with Gradle versions up to 2.5-rc-1.
+
+The current version is known to work with Gradle versions up to 4.3.
 
 ## Tasks
 
@@ -54,20 +61,14 @@ The latest versions can be further filtered using [Component Selection Rules][co
 For example to disallow release candidates as upgradable versions a selection rule could be defined as:
 
 ```groovy
-allprojects {
-  configurations {
-    all {
-      resolutionStrategy {
-        componentSelection {
-          all { ComponentSelection selection ->
-            boolean rejected = ['alpha', 'beta', 'rc', 'cr', 'm'].any { qualifier ->
-              selection.candidate.version ==~ /(?i).*[.-]${qualifier}[.\d-]*/
-            }
-            if (rejected) {
-              selection.reject('Release candidate')
-            }
-          }
-        }
+dependencyUpdates.resolutionStrategy = {
+  componentSelection { rules ->
+    rules.all { ComponentSelection selection ->
+      boolean rejected = ['alpha', 'beta', 'rc', 'cr', 'm'].any { qualifier ->
+        selection.candidate.version ==~ /(?i).*[.-]${qualifier}[.\d-]*/
+      }
+      if (rejected) {
+        selection.reject('Release candidate')
       }
     }
   }
@@ -81,7 +82,7 @@ The task property `outputFormatter` controls the report output format. The follo
   * `"plain"`: format output file as plain text (default)
   * `"json"`: format output file as json text
   * `"xml"`: format output file as xml text, can be used by other plugins (e.g. sonar)
-  * a Closure: will be called with the result of the dependency update analysis
+  * a `Closure`: will be called with the result of the dependency update analysis (see [example below](#custom_report_format))
 
 You can also set multiple output formats using comma as the separator:
 
@@ -275,3 +276,48 @@ XML report
 ```
 
 [component_selection_rules]: https://docs.gradle.org/current/userguide/dependency_management.html#component_selection_rules
+
+#### <a name="custom_report_format"></a>Custom report format
+If you need to create a report in a custom format, you can set the `dependencyUpdates` tasks's `outputFormatter` property to a Closure. The closure will be called with a single argument that is an instance of [com.github.benmanes.gradle.versions.reporter.result.Result](src/main/groovy/com/github/benmanes/gradle/versions/reporter/result/Result.groovy).
+
+For example, if you wanted to create an html table for the upgradable dependencies, you could use:
+
+```groovy
+...
+dependencyUpdates {
+  outputFormatter = { result ->
+    def updatable = result.outdated.dependencies
+    if (!updatable.isEmpty()){
+      def writer = new StringWriter()
+      def html = new groovy.xml.MarkupBuilder(writer)
+
+      html.html {
+        body {
+          table {
+            thead {
+              tr {
+                td("Group")
+                td("Module")
+                td("Current version")
+                td("Latest version")
+              }
+            }
+            tbody {
+              updatable.each { dependency->
+                tr {
+                  td(dependency.group)
+                  td(dependency.name)
+                  td(dependency.version)
+                  td(dependency.available.release ?: dependency.available.milestone)
+                }
+              }
+            }
+          }
+        }
+      }
+      println writer.toString()
+    }
+  }
+}
+
+``` 

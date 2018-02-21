@@ -162,12 +162,12 @@ class DependencyUpdatesSpec extends Specification {
       outputFormatter << ['plain', 'json', 'xml']
   }
 
-  @Unroll('Multi-project with repository on parent (#revision, #outputFormatter)')
+  @Unroll('Multi-project with dependencies on parent (#revision, #outputFormatter)')
   def 'Multi-project with repository on parent'() {
     given:
       def (rootProject, childProject) = multiProject()
       addRepositoryTo(rootProject)
-      addDependenciesTo(childProject)
+      addDependenciesTo(rootProject)
     when:
       def reporter = evaluate(rootProject, revision, outputFormatter)
       reporter.write()
@@ -195,12 +195,12 @@ class DependencyUpdatesSpec extends Specification {
       outputFormatter << ['plain', 'json', 'xml']
   }
 
-  @Unroll('Multi-project with repository on child (#revision, #outputFormatter)')
+  @Unroll('Multi-project with dependencies on child (#revision, #outputFormatter)')
   def 'Multi-project with repository on child'() {
     given:
       def (rootProject, childProject) = multiProject()
       addRepositoryTo(childProject)
-      addDependenciesTo(rootProject)
+      addDependenciesTo(childProject)
     when:
       def reporter = evaluate(rootProject, revision, outputFormatter)
       reporter.write()
@@ -264,11 +264,11 @@ class DependencyUpdatesSpec extends Specification {
       reporter.write()
     then:
       with(reporter) {
-        unresolved.collect { it.selector }.collectEntries { dependency ->
-          [['group': dependency.group, 'name': dependency.name]: dependency.version]
-        } == [['group': 'backport-util-concurrent', 'name': 'backport-util-concurrent']: 'none']
+        unresolved.isEmpty()
         upgradeVersions.isEmpty()
-        upToDateVersions.isEmpty()
+        upToDateVersions.collectEntries { entry ->
+          [['group': entry.key.group, 'name': entry.key.name]: entry.value]
+        } == [['group': 'backport-util-concurrent', 'name': 'backport-util-concurrent']: 'none']
         downgradeVersions.isEmpty()
       }
   }
@@ -414,8 +414,9 @@ class DependencyUpdatesSpec extends Specification {
     [rootProject, childProject, leafProject]
   }
 
-  def evaluate(project, revision = 'milestone', outputFormatter = 'plain', outputDir = 'build') {
-    new DependencyUpdates(project, revision, outputFormatter, outputDir).run()
+  def evaluate(project, revision = 'milestone', outputFormatter = 'plain',
+      outputDir = 'build', resolutionStrategy = null) {
+    new DependencyUpdates(project, resolutionStrategy, revision, outputFormatter, outputDir).run()
   }
 
   def addRepositoryTo(project) {
