@@ -1,0 +1,76 @@
+name: build
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [ opened, labeled, unlabeled, synchronize ]
+
+env:
+  GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.daemon=false -Dkotlin.incremental=false"
+
+jobs:
+  jvm:
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        java-version:
+          - 8
+          - 11
+
+    permissions:
+      checks: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout Project
+        uses: actions/checkout@v4
+
+      - name: Validate Gradle Wrapper
+        uses: gradle/wrapper-validation-action@v3
+
+      - name: Configure JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java-version }}
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run build with caching enabled
+        run: ./gradlew clean build -s
+
+      - name: Publish Test Report
+        uses: EnricoMi/publish-unit-test-result-action@v2.18.0
+        if: always()
+        with:
+          comment_mode: off
+          action_fail_on_inconclusive: true
+          files: '**/build/test-results/test/TEST-*.xml'
+
+      - name: Run examples
+        run: |
+          export VERSION_NAME=$(cat gradle.properties | grep -w "VERSION_NAME" | cut -d'=' -f2)
+          rm -rf ~/.m2/repository/com/github/ben-manes/gradle-versions-plugin/$VERSION_NAME
+          ./gradlew publishToMavenLocal -x test -s
+          cat ~/.m2/repository/com/github/ben-manes/gradle-versions-plugin/$VERSION_NAME/gradle-versions-plugin-$VERSION_NAME.pom
+          cd examples/groovy/ && ../../gradlew dU && cd -
+          cd examples/kotlin/ && ../../gradlew dU && cd -
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gradle-versions-plugin-${{ matrix.java-version }}-${{ github.workflow }}-${{ github.run_id }}
+          path: |
+            build/libs
+            build/outputs
+            build/publications
+            build/distributions
+            build/reports
+            build/test-results
+          if-no-files-found: warn
